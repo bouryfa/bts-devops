@@ -1,0 +1,142 @@
+# =============================================================================
+# DEVOPS STACK - DOCKER COMPOSE CONFIGURATION
+# =============================================================================
+# Stack DevOps comprenant Jenkins, SonarQube et un reverse proxy Nginx
+# pour l'intégration continue et l'analyse de qualité de code
+# =============================================================================
+
+services:
+  # =============================================================================
+  # NGINX REVERSE PROXY
+  # =============================================================================
+  # Reverse proxy pour router le trafic vers Jenkins et SonarQube
+  # - jenkins.bts.io -> Jenkins (port 8080)
+  # - quality.bts.io -> SonarQube (port 9000)
+  nginx-reverse-proxy:
+    container_name: devops-proxy
+    depends_on:
+      - jenkins
+      - sonarqube
+    image: nginx:latest
+    networks:
+      - devops-frontend
+    volumes:
+      - ./conf.d:/etc/nginx/conf.d  # Configuration Nginx personnalisée
+    restart: always
+    ports:
+      - '80:80'  # Exposition sur le port 80 de l'hôte
+  
+  # =============================================================================
+  # JENKINS CI/CD SERVER
+  # =============================================================================
+  # Serveur d'intégration continue Jenkins avec support Docker-in-Docker
+  # Accessible via jenkins.bts.io (configuré dans nginx)
+  jenkins:
+    image: jenkins/jenkins:jdk21  # Image officielle Jenkins avec JDK 21
+    container_name: devops-jenkins
+    
+    # Réseaux: accès frontend (nginx) et réseau interne Jenkins
+    networks:
+      - devops-jenkins-network
+      - devops-frontend
+    
+    # Volumes pour persistance et Docker-in-Docker
+    volumes:
+      - devops-jenkins-data:/var/jenkins_home          # Données Jenkins persistantes
+      - /var/run/docker.sock:/var/run/docker.sock      # Socket Docker pour DinD
+    
+    restart: always
+    privileged: true  # Requis pour Docker-in-Docker
+    user: root        # Requis pour accès au socket Docker
+
+  
+  # =============================================================================
+  # POSTGRESQL DATABASE (SonarQube)
+  # =============================================================================
+  # Base de données PostgreSQL dédiée à SonarQube pour la persistance
+  # des analyses de qualité de code et des configurations
+  devops-sonarqube-database:
+    container_name: devops-sonarqube-database
+    image: "postgres:16.4"  # PostgreSQL version 16.4 LTS
+    
+    # Volume pour persistance des données de la base
+    volumes:
+      - devops-sonarqube-postgres-data:/var/lib/postgresql/data
+    
+    # Configuration de la base de données SonarQube
+    environment:
+      - POSTGRES_PASSWORD=passer123  # Mot de passe (à changer en production)
+      - POSTGRES_USER=sonar          # Utilisateur dédié SonarQube
+      - POSTGRES_DB=sonar            # Base de données SonarQube
+    
+    # Réseau interne SonarQube avec alias pour résolution DNS
+    networks:
+      devops-sonarqube-network:
+        aliases:
+          - devops-sonarqube-database
+
+  # =============================================================================
+  # SONARQUBE CODE QUALITY PLATFORM
+  # =============================================================================
+  # Plateforme d'analyse de qualité de code SonarQube Community Edition
+  # Accessible via quality.bts.io (configuré dans nginx)
+  sonarqube:
+    image: sonarqube:10.7.0-community  # SonarQube Community Edition
+    container_name: devops-sonarqube
+    
+    # Dépendance: attendre que la base de données soit prête
+    depends_on:
+      - devops-sonarqube-database
+    
+    # Réseaux: accès frontend (nginx) et réseau interne base de données
+    networks:
+      - devops-sonarqube-network
+      - devops-frontend
+    
+    # Volume pour persistance des données SonarQube
+    volumes:
+      - devops-sonarqube-data:/opt/sonarqube
+    
+    # Configuration de connexion à PostgreSQL
+    environment:
+      - SONAR_JDBC_USERNAME=sonar
+      - SONAR_JDBC_PASSWORD=passer123
+      - SONAR_JDBC_URL=jdbc:postgresql://devops-sonarqube-database/sonar?characterEncoding=utf8
+    
+    restart: always
+
+# =============================================================================
+# RÉSEAUX DOCKER
+# =============================================================================
+networks:
+  # Réseau frontend pour le reverse proxy nginx
+  devops-frontend:
+    name: devops-frontend
+    driver: bridge
+  
+  # Réseau interne Jenkins (pour extensions futures)
+  devops-jenkins-network:
+    name: devops-jenkins-network
+    driver: bridge
+  
+  # Réseau interne SonarQube <-> PostgreSQL
+  devops-sonarqube-network:
+    name: devops-sonarqube-network
+    driver: bridge
+
+# =============================================================================
+# VOLUMES DOCKER POUR PERSISTANCE
+# =============================================================================
+volumes:
+  # Volume Jenkins: configurations, jobs, plugins, historique des builds
+  devops-jenkins-data:
+    name: devops-jenkins-data
+  
+  # Volume SonarQube: configurations, règles, profils de qualité
+  devops-sonarqube-data:
+    name: devops-sonarqube-data
+  
+  # Volume PostgreSQL: base de données SonarQube
+  devops-sonarqube-postgres-data:
+    name: devops-sonarqube-postgres-data
+  
